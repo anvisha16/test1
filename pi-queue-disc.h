@@ -172,6 +172,32 @@ private:
   EventId m_rtrsEvent;                          //!< Event used to decide the decision of interval of drop probability calculation
   Ptr<UniformRandomVariable> m_uv;              //!< Rng stream
 
+  // **Self Tuning PI
+  
+  std::ofstream myfile;
+  
+  bool m_useEcn;                                //!< True if ECN is used (packets are marked instead of being dropped)
+  bool m_idle;                                  //!< Idle status
+  bool m_isSTPI;                                //!< To enable STPI
+  double m_capacity;                            //!< link capacity
+  double m_kc;                                  //!< filter time constant to smoothen capacity
+  double m_knrc;                                //!< filter time constant to smoothen N/R*C
+  double m_bpi;                                 //!< controls AQM Responsiveness
+  double m_thc;                                 //!< Smoothened estimate of Capacity
+  double m_thnrc;                               //!< Smoothened estimate of N/R*C
+  double m_oldThc;                              //!< old Smoothened estimate of Capacity
+  double m_oldThnrc;                            //!< old Smoothened estimate of N/R*C
+  Time m_oldRoutBusyTime;                       //!< Router's old busy time
+  double m_rtt;                                 //!< estimated round trip time
+  double m_kp;                                  //!< PI parameter
+  double m_ki;                                  //!< PI parameter
+  Time m_totalIdleTime;                         //!< Router's total idle Time
+  Time m_idleStartTime;                         //!< Router's idle Start Time
+  Time m_idleEndTime;                           //!< Router's idle Start Time
+  double m_routerBusyTime;                    //!< Router's Busy Time
+  uint32_t m_departedPkts;                      //!< No. of departed packets since the last probability calculation
+
+
 };
 
 }    // namespace ns3
