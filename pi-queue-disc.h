@@ -78,24 +78,15 @@ public:
   } Stats;
 
   /**
-   * \brief Set the operating mode of this queue.
-   *
-   * \param mode The operating mode of this queue.
+   * \brief Drop types
    */
-  void SetMode (Queue::QueueMode mode);
+  enum
+  {
+    DTYPE_NONE,        //!< Ok, no drop
+    DTYPE_FORCED,      //!< A "forced" drop
+    DTYPE_UNFORCED,    //!< An "unforced" (random) drop
+  };
 
-  /**
-   * \brief Get the encapsulation mode of this queue.
-   *
-   * \returns The encapsulation mode of this queue.
-   */
-  Queue::QueueMode GetMode (void);
-
-  /**
-   * \brief Get the current value of the queue in bytes or packets.
-   *
-   * \returns The queue size in bytes or packets.
-   */
   uint32_t GetQueueSize (void);
 
   /**
@@ -103,7 +94,7 @@ public:
    *
    * \param lim The limit in bytes or packets.
    */
-  void SetQueueLimit (double lim);
+  void SetQueueLimit (uint32_t lim);
 
   /**
    * \brief Get PI statistics after running.
@@ -121,6 +112,13 @@ public:
    * \return the number of stream indices assigned by this model
    */
   int64_t AssignStreams (int64_t stream);
+
+  // Reasons for dropping packets
+  static constexpr const char* UNFORCED_DROP = "Unforced drop";  //!< Early probability drops
+  static constexpr const char* FORCED_DROP = "Forced drop";      //!< Forced drop
+  // Reasons for marking packets
+  static constexpr const char* UNFORCED_MARK = "Unforced mark";  //!< Early probability marks
+  static constexpr const char* FORCED_MARK = "Forced mark";      //!< Forced mark
 
 protected:
   /**
@@ -157,7 +155,7 @@ private:
   Stats m_stats;                                //!< PI statistics
 
   // ** Variables supplied by user
-  Queue::QueueMode m_mode;                      //!< Mode (bytes or packets)
+  //Queue::QueueMode m_mode;                      //!< Mode (bytes or packets)
   double m_queueLimit;                          //!< Queue limit in bytes / packets
   uint32_t m_meanPktSize;                       //!< Average packet size in bytes
   double m_qRef;                                //!< Desired queue size
@@ -170,8 +168,31 @@ private:
   uint32_t m_qOld;                              //!< Old value of queue length
   EventId m_rtrsEvent;                          //!< Event used to decide the decision of interval of drop probability calculation
   Ptr<UniformRandomVariable> m_uv;              //!< Rng stream
+
+  // **Self Tuning PI
+  bool m_useEcn;                                //!< True if ECN is used (packets are marked instead of being dropped)
+  bool m_idle;                                  //!< Idle status
+  bool m_isSTPI;                                //!< To enable STPI
+  double m_capacity;                            //!< link capacity
+  double m_kc;                                  //!< filter time constant to smoothen capacity
+  double m_knrc;                                //!< filter time constant to smoothen N/R*C
+  double m_bpi;                                 //!< controls AQM Responsiveness
+  double m_thc;                                 //!< Smoothened estimate of Capacity
+  double m_thnrc;                               //!< Smoothened estimate of N/R*C
+  double m_oldThc;                              //!< old Smoothened estimate of Capacity
+  double m_oldThnrc;                            //!< old Smoothened estimate of N/R*C
+  Time m_oldRoutBusyTime;                       //!< Router's old busy time
+  double m_rtt;                                 //!< estimated round trip time
+  double m_kp;                                  //!< PI parameter
+  double m_ki;                                  //!< PI parameter
+  Time m_idleTime;                              //!< Router's idle Time
+  Time m_idleStartTime;                         //!< Router's idle Start Time
+  uint32_t m_routerBusyTime;                    //!< Router's Busy Time
+  uint32_t m_departedPkts;                      //!< No. of departed packets since the last probability calculation
+
+
 };
 
-};   // namespace ns3
+}    // namespace ns3
 
 #endif

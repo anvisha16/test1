@@ -15,8 +15,8 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- * Authors: Priya S Tavarmani <priyast663@gmail.com>
- *          Viyom Mittal <viyommittal@gmail.com>
+ * Authors: Anvisha Srivastava <anvisha94@gmail.com>
+ *          Aarti Nandagiri <aarti.nandagiri@gmail.com>
  *          Mohit P. Tahiliani <tahiliani@nitk.edu.in>
  */
 
@@ -24,7 +24,9 @@
  * PORT NOTE: This code was ported from ns-2.36rc1 (queue/pi.cc).
  * Most of the comments are also ported from the same.
  */
-
+#include <iostream>
+#include <string>
+#include <fstream>
 #include "ns3/log.h"
 #include "ns3/enum.h"
 #include "ns3/uinteger.h"
@@ -33,6 +35,7 @@
 #include "ns3/abort.h"
 #include "pi-queue-disc.h"
 #include "ns3/drop-tail-queue.h"
+
 
 namespace ns3 {
 
@@ -46,12 +49,6 @@ TypeId PiQueueDisc::GetTypeId (void)
     .SetParent<QueueDisc> ()
     .SetGroupName ("TrafficControl")
     .AddConstructor<PiQueueDisc> ()
-    .AddAttribute ("Mode",
-                   "Determines unit for QueueLimit",
-                   EnumValue (Queue::QUEUE_MODE_PACKETS),
-                   MakeEnumAccessor (&PiQueueDisc::SetMode),
-                   MakeEnumChecker (Queue::QUEUE_MODE_BYTES, "QUEUE_MODE_BYTES",
-                                    Queue::QUEUE_MODE_PACKETS, "QUEUE_MODE_PACKETS"))
     .AddAttribute ("MeanPktSize",
                    "Average of packet size",
                    UintegerValue (500),
@@ -82,6 +79,69 @@ TypeId PiQueueDisc::GetTypeId (void)
                    DoubleValue (50),
                    MakeDoubleAccessor (&PiQueueDisc::SetQueueLimit),
                    MakeDoubleChecker<double> ())
+    .AddAttribute ("MaxSize",
+                   "The maximum number of packets accepted by this queue disc",
+                   QueueSizeValue (QueueSize ("500p")),
+                   MakeQueueSizeAccessor (&QueueDisc::SetMaxSize,
+                                          &QueueDisc::GetMaxSize),
+                   MakeQueueSizeChecker ())
+    // Self Tuning PI
+    .AddAttribute ("STPI",
+                   "True to enable Self Tuning PI",
+                   BooleanValue (false),
+                   MakeBooleanAccessor (&PiQueueDisc::m_isSTPI),
+                   MakeBooleanChecker ())
+    .AddAttribute ("LinkCapacity",
+                   "The STPI Link Capacity",
+                   DoubleValue (0),
+                   MakeDoubleAccessor (&PiQueueDisc::m_capacity),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("Kc",
+                   "Filter time constant to smoothen capacity",
+                   DoubleValue (0.5),
+                   MakeDoubleAccessor (&PiQueueDisc::m_kc),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("Knrc",
+                   "Filter time constant to smoothen N/R*C",
+                   DoubleValue (0.5),
+                   MakeDoubleAccessor (&PiQueueDisc::m_knrc),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("BPI",
+                   "Controls AQM responsiveness",
+                   DoubleValue (0.5),
+                   MakeDoubleAccessor (&PiQueueDisc::m_bpi),
+                   MakeDoubleChecker<double> (0,0.85))
+    .AddAttribute ("Thc",
+                   "Smoothened estimate of C",
+                   DoubleValue (0),
+                   MakeDoubleAccessor (&PiQueueDisc::m_thc),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("Thnrc",
+                   "Smoothened estimate of N/R*C",
+                   DoubleValue (0),
+                   MakeDoubleAccessor (&PiQueueDisc::m_thnrc),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("RTT",
+                   "estimated round trip time",
+                   DoubleValue (0),
+                   MakeDoubleAccessor (&PiQueueDisc::m_rtt),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("Kp",
+                   "PI parameter",
+                   DoubleValue (0.00001816),
+                   MakeDoubleAccessor (&PiQueueDisc::m_kp),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("Ki",
+                   "PI parameter",
+                   DoubleValue (0.00001822),
+                   MakeDoubleAccessor (&PiQueueDisc::m_ki),
+                   MakeDoubleChecker<double> ())
+    .AddAttribute ("UseEcn",
+                   "True to use ECN (packets are marked instead of being dropped)",
+                   BooleanValue (false),
+                   MakeBooleanAccessor (&PiQueueDisc::m_useEcn),
+                   MakeBooleanChecker ())
+
   ;
 
   return tid;
@@ -93,6 +153,7 @@ PiQueueDisc::PiQueueDisc ()
   NS_LOG_FUNCTION (this);
   m_uv = CreateObject<UniformRandomVariable> ();
   m_rtrsEvent = Simulator::Schedule (Time (Seconds (1.0 / m_w)), &PiQueueDisc::CalculateP, this);
+
 }
 
 PiQueueDisc::~PiQueueDisc ()
@@ -110,50 +171,19 @@ PiQueueDisc::DoDispose (void)
 }
 
 void
-PiQueueDisc::SetMode (Queue::QueueMode mode)
-{
-  NS_LOG_FUNCTION (this << mode);
-  m_mode = mode;
-}
-
-Queue::QueueMode
-PiQueueDisc::GetMode (void)
-{
-  NS_LOG_FUNCTION (this);
-  return m_mode;
-}
-
-void
-PiQueueDisc::SetQueueLimit (double lim)
+PiQueueDisc::SetQueueLimit (uint32_t lim)
 {
   NS_LOG_FUNCTION (this << lim);
-  m_queueLimit = lim;
+  SetMaxSize (QueueSize (GetMaxSize ().GetUnit (), lim));
 }
 
 uint32_t
 PiQueueDisc::GetQueueSize (void)
 {
   NS_LOG_FUNCTION (this);
-  if (GetMode () == Queue::QUEUE_MODE_BYTES)
-    {
-      return GetInternalQueue (0)->GetNBytes ();
-    }
-  else if (GetMode () == Queue::QUEUE_MODE_PACKETS)
-    {
-      return GetInternalQueue (0)->GetNPackets ();
-    }
-  else
-    {
-      NS_ABORT_MSG ("Unknown PI mode.");
-    }
+  return GetInternalQueue (0)->GetCurrentSize ().GetValue ();
 }
 
-PiQueueDisc::Stats
-PiQueueDisc::GetStats ()
-{
-  NS_LOG_FUNCTION (this);
-  return m_stats;
-}
 
 int64_t
 PiQueueDisc::AssignStreams (int64_t stream)
@@ -168,26 +198,38 @@ PiQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
 {
   NS_LOG_FUNCTION (this << item);
 
-  uint32_t nQueued = GetQueueSize ();
+  QueueSize nQueued = GetCurrentSize ();
 
-  if ((GetMode () == Queue::QUEUE_MODE_PACKETS && nQueued >= m_queueLimit)
-      || (GetMode () == Queue::QUEUE_MODE_BYTES && nQueued + item->GetPacketSize () > m_queueLimit))
+  if (m_idle)
+    {
+      Time m_idleEndTime = Simulator :: Now ();
+      m_totalIdleTime += (m_idleEndTime - m_idleStartTime);
+      m_idleEndTime = NanoSeconds (0);
+      m_idleStartTime = NanoSeconds (0);
+      m_idle = false;
+    }
+
+
+  if (nQueued + item > GetMaxSize ())
     {
       // Drops due to queue limit: reactive
-      Drop (item);
-      m_stats.forcedDrop++;
+      DropBeforeEnqueue (item, FORCED_DROP);
       return false;
     }
-  else if (DropEarly (item, nQueued))
+  else if (DropEarly (item, nQueued.GetValue ()))
     {
-      // Early probability drop: proactive
-      Drop (item);
-      m_stats.unforcedDrop++;
-      return false;
+      if (!m_useEcn || !Mark (item, UNFORCED_MARK))
+        {
+          // Early probability drop: proactive
+          DropBeforeEnqueue (item, UNFORCED_DROP);
+          return false;
+        }
     }
 
   // No drop
   bool retval = GetInternalQueue (0)->Enqueue (item);
+
+  // Self Tuning PI
 
   // If Queue::Enqueue fails, QueueDisc::Drop is called by the internal queue
   // because QueueDisc::AddInternalQueue sets the drop callback
@@ -202,9 +244,19 @@ void
 PiQueueDisc::InitializeParams (void)
 {
   m_dropProb = 0;
-  m_stats.forcedDrop = 0;
-  m_stats.unforcedDrop = 0;
   m_qOld = 0;
+
+  // Self-Tuning PI
+  if (m_isSTPI)
+    {
+      m_oldThc = 0;
+      m_oldThnrc = 0;
+      m_idle = true;
+      m_idleStartTime = NanoSeconds (0);
+      m_idleEndTime = NanoSeconds (0);
+      m_totalIdleTime = NanoSeconds (0);
+      m_oldRoutBusyTime = NanoSeconds (0);
+    }
 }
 
 bool PiQueueDisc::DropEarly (Ptr<QueueDiscItem> item, uint32_t qSize)
@@ -213,10 +265,10 @@ bool PiQueueDisc::DropEarly (Ptr<QueueDiscItem> item, uint32_t qSize)
 
   double p = m_dropProb;
   bool earlyDrop = true;
-  
-  if (GetMode () == Queue::QUEUE_MODE_BYTES)
+
+  if (GetMaxSize ().GetUnit () == QueueSizeUnit::BYTES)
     {
-       p = p * item->GetPacketSize () / m_meanPktSize;
+      p = p * item->GetSize () / m_meanPktSize;
     }
   p = p > 1 ? 1 : p;
 
@@ -239,18 +291,77 @@ void PiQueueDisc::CalculateP ()
   NS_LOG_FUNCTION (this);
   double p = 0.0;
   uint32_t qlen = GetQueueSize ();
-  if (GetMode () == Queue::QUEUE_MODE_BYTES)
+
+  // Self Tuning PI (STPI)
+  if (m_isSTPI)
     {
-      p = m_a * ((qlen * 1.0 / m_meanPktSize) - m_qRef) - m_b * ((m_qOld * 1.0 / m_meanPktSize) - m_qRef) + m_dropProb;
+      if (m_idle)
+        {
+          m_idleEndTime = Simulator :: Now ();
+          m_totalIdleTime += (m_idleEndTime - m_idleStartTime);
+          m_idleEndTime = NanoSeconds (0);
+          m_idleStartTime = NanoSeconds (0);
+        }
+
+      m_rtt = 0.0025 / 1000.0;
+      m_routerBusyTime = double (((Seconds (1.0 / m_w)) - ((m_totalIdleTime))).GetSeconds ());
+      if (m_routerBusyTime > 0)
+        {
+          m_capacity = (m_departedPkts * m_meanPktSize * 8.0) / (m_routerBusyTime);
+          m_thc = ((m_oldThc * (1 - m_kc)) + (m_kc * m_capacity));
+          if (m_dropProb > 0)
+            {
+              m_thnrc = ((m_oldThnrc * (1 - m_knrc)) + (m_knrc * (std :: sqrt (m_dropProb / 2))));
+              // m_rtt = (((m_thnrc / m_thc)) / (std :: sqrt (m_dropProb / 2)));
+              // m_ki is alpha and m_Kp is beta
+              m_kp = (2 * m_bpi * (std :: sqrt ((m_bpi * m_bpi) + 1)) * m_thnrc ) / (m_rtt * m_thc);
+              m_ki = ((2 * m_thnrc) / m_rtt) * m_kp;
+            }
+        }
+
+      if (GetMaxSize ().GetUnit () == QueueSizeUnit::BYTES)
+        {
+          p = (m_ki * (qlen * 1.0 / m_meanPktSize) - m_qRef) + (m_kp * (qlen * 1.0 / m_meanPktSize));
+          // p = (m_ki * ((qlen * 1.0 / m_meanPktSize) - m_qRef)) - (m_kp * ((m_qOld * 1.0 / m_meanPktSize) - m_qRef)) + m_dropProb;
+
+        }
+      else
+        {
+          p = (m_ki * (qlen - m_qRef)) + (m_kp * qlen);
+          // p = (m_ki * (qlen - m_qRef)) - (m_kp * (m_qOld - m_qRef)) + m_dropProb;
+        }
+      m_idleStartTime = NanoSeconds (0);
+      m_idleEndTime = NanoSeconds (0);
+      if (m_idle)
+        {
+          m_idleStartTime = Simulator :: Now ();
+        }
+
+
+      m_departedPkts = 0;
+      m_oldThnrc = m_thnrc;
+      m_oldThc = m_thc;
+
     }
+
+  // PI
   else
     {
-      p = m_a * (qlen - m_qRef) - m_b * (m_qOld - m_qRef) + m_dropProb;
+      if (GetMaxSize ().GetUnit () == QueueSizeUnit::BYTES)
+
+        {
+          p = m_a * ((qlen * 1.0 / m_meanPktSize) - m_qRef) - m_b * ((m_qOld * 1.0 / m_meanPktSize) - m_qRef) + m_dropProb;
+        }
+      else
+        {
+          p = m_a * (qlen - m_qRef) - m_b * (m_qOld - m_qRef) + m_dropProb;
+        }
     }
   p = (p < 0) ? 0 : p;
   p = (p > 1) ? 1 : p;
 
   m_dropProb = p;
+  m_totalIdleTime = NanoSeconds (0);
   m_qOld = qlen;
   m_rtrsEvent = Simulator::Schedule (Time (Seconds (1.0 / m_w)), &PiQueueDisc::CalculateP, this);
 }
@@ -260,14 +371,21 @@ PiQueueDisc::DoDequeue ()
 {
   NS_LOG_FUNCTION (this);
 
-  if (GetInternalQueue (0)->IsEmpty ())
+  if (!GetInternalQueue (0)->IsEmpty ())
+    {
+      m_idle = false;
+      Ptr<QueueDiscItem> item = StaticCast<QueueDiscItem> (GetInternalQueue (0)->Dequeue ());
+      m_departedPkts++;
+      return item;
+    }
+  else
     {
       NS_LOG_LOGIC ("Queue empty");
+      // Self-Tuning PI
+      m_idle = true;
+      m_idleStartTime = Simulator::Now ();
       return 0;
     }
-
-  Ptr<QueueDiscItem> item = StaticCast<QueueDiscItem> (GetInternalQueue (0)->Dequeue ());
-  return item;
 }
 
 Ptr<const QueueDiscItem>
@@ -307,16 +425,9 @@ PiQueueDisc::CheckConfig (void)
   if (GetNInternalQueues () == 0)
     {
       // create a DropTail queue
-      Ptr<Queue> queue = CreateObjectWithAttributes<DropTailQueue> ("Mode", EnumValue (m_mode));
-      if (m_mode == Queue::QUEUE_MODE_PACKETS)
-        {
-          queue->SetMaxPackets (m_queueLimit);
-        }
-      else
-        {
-          queue->SetMaxBytes (m_queueLimit);
-        }
-      AddInternalQueue (queue);
+      AddInternalQueue (CreateObjectWithAttributes<DropTailQueue<QueueDiscItem> >
+                          ("MaxSize", QueueSizeValue (GetMaxSize ())));
+
     }
 
   if (GetNInternalQueues () != 1)
@@ -325,20 +436,7 @@ PiQueueDisc::CheckConfig (void)
       return false;
     }
 
-  if (GetInternalQueue (0)->GetMode () != m_mode)
-    {
-      NS_LOG_ERROR ("The mode of the provided queue does not match the mode set on the PiQueueDisc");
-      return false;
-    }
-
-  if ((m_mode ==  Queue::QUEUE_MODE_PACKETS && GetInternalQueue (0)->GetMaxPackets () < m_queueLimit)
-      || (m_mode ==  Queue::QUEUE_MODE_BYTES && GetInternalQueue (0)->GetMaxBytes () < m_queueLimit))
-    {
-      NS_LOG_ERROR ("The size of the internal queue is less than the queue disc limit");
-      return false;
-    }
-
   return true;
 }
 
-} //namespace ns3
+} // namespace ns3
